@@ -95,8 +95,7 @@ func (s *Session) fetchMOTD() string {
 	lines := strings.Split(strings.TrimRight(output, "\r\n"), "\n")
 	if len(lines) >= 2 {
 		body := strings.Join(lines[:len(lines)-1], "\n")
-		prompt := strings.TrimRight(lines[len(lines)-1], "\r")
-		output = body + "\n\n" + prompt
+		output = body + "\n\n" + s.lastPrompt
 	}
 	return output
 }
@@ -110,6 +109,7 @@ func (s *Session) streamResponse(sess ssh.Session, command string) {
 	var full strings.Builder    // accumulates the full response for history
 	var lineBuf strings.Builder // buffers tokens until a complete line is ready
 	firstLine := true           // track first line to filter command echo
+	pendingBlanks := 0          // blank lines held back until we know more follows
 
 	err := s.provider.ExecuteCommandStream(ctx, s.scenario, s.history, command, func(chunk string) {
 		full.WriteString(chunk)
@@ -137,6 +137,15 @@ func (s *Session) streamResponse(sess ssh.Session, command string) {
 				if isCommandEcho(raw, command) {
 					continue
 				}
+			}
+			// Hold blank lines — discard them if the prompt follows immediately.
+			if raw == "" {
+				pendingBlanks++
+				continue
+			}
+			// Flush held blank lines before this non-blank line.
+			for ; pendingBlanks > 0; pendingBlanks-- {
+				_, _ = sess.Write([]byte("\r\n"))
 			}
 			// Normalise to \r\n for PTY clients.
 			_, _ = sess.Write([]byte(raw + "\r\n"))
