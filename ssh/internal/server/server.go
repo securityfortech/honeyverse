@@ -13,7 +13,7 @@ import (
 	"github.com/gliderlabs/ssh"
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/honeyverse/ssh/internal/claude"
+	"github.com/honeyverse/ssh/internal/llm"
 	"github.com/honeyverse/ssh/internal/logger"
 	"github.com/honeyverse/ssh/internal/scenario"
 	"github.com/honeyverse/ssh/internal/shell"
@@ -22,17 +22,17 @@ import (
 // Server wraps the gliderlabs SSH server with honeypot logic.
 type Server struct {
 	scenario *scenario.Scenario
-	claude   *claude.Client
+	llm     llm.Provider
 	logger   *logger.Logger
 	ssh      *ssh.Server
 }
 
 // New builds a Server listening on the given port.
 // hostKeyPath is the file used to persist the RSA host key across restarts.
-func New(sc *scenario.Scenario, cl *claude.Client, lg *logger.Logger, port int, hostKeyPath string) (*Server, error) {
+func New(sc *scenario.Scenario, cl llm.Provider, lg *logger.Logger, port int, hostKeyPath string) (*Server, error) {
 	srv := &Server{
 		scenario: sc,
-		claude:   cl,
+		llm:      cl,
 		logger:   lg,
 	}
 
@@ -77,7 +77,7 @@ func (s *Server) handlePassword(ctx ssh.Context, password string) bool {
 	authCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	accepted := s.claude.ValidateAuth(authCtx, s.scenario.Content(), username, password)
+	accepted := s.llm.ValidateAuth(authCtx, s.scenario.Content(), username, password)
 
 	if accepted {
 		s.logger.Log(logger.Event{
@@ -122,7 +122,7 @@ func (s *Server) handleSession(sess ssh.Session) {
 	})
 	log.Printf("[%s] SESSION START  user=%q ip=%s", id, username, remoteIP)
 
-	sh := shell.New(id, username, s.scenario.Content(), s.claude, s.logger)
+	sh := shell.New(id, username, s.scenario.Content(), s.llm, s.logger)
 	sh.Run(sess)
 
 	s.logger.Log(logger.Event{

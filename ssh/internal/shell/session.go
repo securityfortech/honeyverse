@@ -10,7 +10,7 @@ import (
 
 	"github.com/gliderlabs/ssh"
 
-	"github.com/honeyverse/ssh/internal/claude"
+	"github.com/honeyverse/ssh/internal/llm"
 	"github.com/honeyverse/ssh/internal/logger"
 )
 
@@ -19,19 +19,19 @@ type Session struct {
 	id         string
 	username   string
 	scenario   string
-	history    []claude.Message
-	lastPrompt string // last shell prompt line emitted by Claude
-	claude     *claude.Client
+	history    []llm.Message
+	lastPrompt string // last shell prompt line emitted by the LLM
+	llm        llm.Provider
 	logger     *logger.Logger
 }
 
 // New creates a Session.
-func New(id, username, scenarioContent string, cl *claude.Client, lg *logger.Logger) *Session {
+func New(id, username, scenarioContent string, cl llm.Provider, lg *logger.Logger) *Session {
 	return &Session{
 		id:       id,
 		username: username,
 		scenario: scenarioContent,
-		claude:   cl,
+		llm:    cl,
 		logger:   lg,
 	}
 }
@@ -86,7 +86,7 @@ func (s *Session) fetchMOTD() string {
 	defer cancel()
 
 	initMsg := "__SYSTEM_INIT__: Output the login MOTD and last-login banner for this system, then on the very last line show the initial shell prompt (format: user@hostname:~$). Raw text only."
-	output, err := s.claude.ExecuteCommand(ctx, s.scenario, nil, initMsg)
+	output, err := s.llm.ExecuteCommand(ctx, s.scenario, nil, initMsg)
 	if err != nil || output == "" {
 		// Fallback: static prompt so the attacker sees something.
 		output = fmt.Sprintf("%s@host:~$ ", s.username)
@@ -110,7 +110,7 @@ func (s *Session) streamClaude(sess ssh.Session, command string) {
 		_, _ = sess.Write([]byte(line))
 	}
 
-	err := s.claude.ExecuteCommandStream(ctx, s.scenario, s.history, command, func(chunk string) {
+	err := s.llm.ExecuteCommandStream(ctx, s.scenario, s.history, command, func(chunk string) {
 		full.WriteString(chunk)
 		lineBuf.WriteString(chunk)
 
@@ -150,8 +150,8 @@ func (s *Session) streamClaude(sess ssh.Session, command string) {
 	}
 
 	s.history = append(s.history,
-		claude.Message{Role: "user", Content: command},
-		claude.Message{Role: "assistant", Content: output},
+		llm.Message{Role: "user", Content: command},
+		llm.Message{Role: "assistant", Content: output},
 	)
 }
 
