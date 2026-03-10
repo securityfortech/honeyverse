@@ -1,33 +1,33 @@
-# Honeyverse
+# Honeyverse 🔐🍯🤖
 
-A security honeypot that uses Claude as its brain. Instead of hardcoded fake responses, you describe the system you want to simulate in plain English — and Claude does the rest in real time.
+Honeyverse is a versatile AI-powered honeypot platform designed to simulate realistic digital environments and trap threat actors inside controlled deception scenarios. Instead of exposing real infrastructure, Honeyverse allows defenders to define custom attack scenarios while large language models dynamically generate a believable fake world around the attacker.
 
-## The Idea
+The system can emulate virtually any service, protocol, or infrastructure — SSH servers, web applications, APIs, cloud environments, enterprise networks, IoT devices, and industrial systems. Every interaction inside the environment is generated in real time by LLMs, including command outputs, system responses, file systems, logs, configurations, and service behaviors, creating a dynamic simulation that evolves as the attacker explores it.
 
-Traditional honeypots are static. They pretend to be a specific system by replaying scripted responses. The moment an attacker goes slightly off-script, the illusion breaks.
+From the attacker's perspective the environment appears authentic and interactive, while in reality they are operating inside a controlled simulation designed to observe behavior, capture techniques, gather high-value threat intelligence, and keep adversaries engaged in an infinite exploration loop without ever reaching real assets.
 
-Honeyverse works differently: every interaction is generated live by an LLM. You write a `SCENARIO.md` describing a system — its hostname, users, installed software, files, planted secrets, vulnerabilities — and Claude becomes that system. Commands produce consistent, plausible output. Files exist. Directories are navigable. Credentials work. The fake server feels real because it reasons about itself in context.
+Honeyverse transforms traditional honeypots into adaptive deception environments where every attacker interaction becomes an opportunity to study tactics, delay intrusion campaigns, and strengthen defensive intelligence.
 
-The attacker gets trapped in an infinite, believable environment while everything they do gets logged.
+## How It Works
 
 ## How It Works
 
 ```
-SCENARIO.md  ──▶  Claude (system prompt)
+SCENARIO.md  ──▶  LLM (system prompt)
                        │
-attacker types command  ──▶  Claude generates terminal output  ──▶  streamed back line by line
+attacker types command  ──▶  LLM generates terminal output  ──▶  streamed back line by line
                        │
                   session log (.jsonl)
 ```
 
 1. You write `SCENARIO.md` describing any system you want to simulate
-2. The honeypot starts an SSH server
-3. When an attacker connects, Claude validates their credentials against the scenario
-4. Once in, every command they type is sent to Claude with the full conversation history
-5. Claude responds as the real system would — maintaining filesystem state, tracking the working directory, generating realistic file contents
+2. The honeypot starts a service (e.g. SSH)
+3. When an attacker connects, the LLM validates their credentials against the scenario
+4. Once in, every command they type is sent to the LLM with the full conversation history
+5. The LLM responds as the real system would — maintaining filesystem state, tracking the working directory, generating realistic file contents
 6. Everything is logged: credentials, commands, outputs
 
-The conversation history *is* the state. Claude naturally stays consistent because it remembers what it already said.
+The conversation history *is* the state. The LLM stays consistent because it remembers everything it already said.
 
 ## SSH Honeypot
 
@@ -37,7 +37,7 @@ ssh/
 ├── main.go              # Entry point
 └── internal/
     ├── scenario/        # Loads SCENARIO.md
-    ├── claude/          # Anthropic API client (auth + streaming shell)
+    ├── llm/             # Provider interface + Anthropic & Ollama backends
     ├── server/          # gliderlabs/ssh server, host key management
     ├── shell/           # PTY session: echo, backspace, line-buffered streaming
     └── logger/          # Per-session JSONL logs
@@ -65,7 +65,10 @@ ssh admin@localhost -p 2222
 | `--port` | `2222` | SSH listen port |
 | `--log-dir` | `sessions/` | Directory for session logs |
 | `--host-key` | `host_key` | Path to persist the RSA host key |
+| `--provider` | `anthropic` | LLM backend: `anthropic` or `ollama` |
 | `--api-key` | `$ANTHROPIC_API_KEY` | Anthropic API key |
+| `--ollama-url` | `http://localhost:11434` | Ollama base URL |
+| `--ollama-model` | `qwen2.5:0.5b` | Ollama model name |
 
 ### Writing a Scenario
 
@@ -97,7 +100,7 @@ ssh admin@localhost -p 2222
 - ...
 ```
 
-The more detail you provide, the more convincing the simulation. Planted secrets, realistic bash history, misconfigured services — Claude will honour all of it.
+The more detail you provide, the more convincing the simulation. Planted secrets, realistic bash history, misconfigured services — the LLM will honour all of it.
 
 ### Session Logs
 
@@ -123,8 +126,26 @@ Event types: `connect`, `auth_attempt`, `auth_accept`, `auth_reject`, `command`,
 - [ ] DNS honeypot
 - [ ] YAML scenario format with stricter structure
 
+## LLM Providers
+
+| Provider | Flag | Notes |
+|----------|------|-------|
+| Anthropic Claude | `--provider anthropic` | Best quality. Requires API key. |
+| Ollama (local) | `--provider ollama` | Fully offline. Recommend 7B+ models. |
+
+```bash
+# Anthropic (default)
+go run . --provider anthropic
+
+# Ollama — local, no API key needed
+go run . --provider ollama --ollama-model llama3.1:8b
+go run . --provider ollama --ollama-model qwen2.5:7b
+```
+
+> **Note:** Models below 7B parameters typically cannot follow strict terminal-emulation instructions reliably.
+
 ## Requirements
 
 - Go 1.22+
-- Anthropic API key
+- Anthropic API key (for Anthropic provider) or Ollama running locally
 - For port 22 redirect: `iptables -t nat -A PREROUTING -p tcp --dport 22 -j REDIRECT --to-port 2222`
