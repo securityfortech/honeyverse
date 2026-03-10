@@ -144,7 +144,10 @@ func (s *Session) streamResponse(sess ssh.Session, command string) {
 	})
 
 	// Flush the trailing prompt (no \n after it — cursor stays on prompt line).
-	if remainder := lineBuf.String(); remainder != "" {
+	if remainder := strings.TrimRight(lineBuf.String(), " "); remainder != "" {
+		if strings.HasSuffix(remainder, "$") {
+			remainder += " "
+		}
 		_, _ = sess.Write([]byte(remainder))
 	}
 
@@ -164,11 +167,15 @@ func (s *Session) streamResponse(sess ssh.Session, command string) {
 	)
 }
 
-// extractPrompt returns the last non-empty line of output.
+// extractPrompt returns the last non-empty line of output, always with a
+// trailing space after the $ so the cursor sits one space after the prompt.
 func extractPrompt(output string) string {
 	lines := strings.Split(strings.TrimRight(output, "\r\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		if line := strings.TrimRight(lines[i], "\r"); line != "" {
+		if line := strings.TrimRight(lines[i], "\r "); line != "" {
+			if strings.HasSuffix(line, "$") {
+				return line + " "
+			}
 			return line
 		}
 	}
