@@ -80,7 +80,7 @@ func (s *Session) Run(sess ssh.Session) {
 // fetchMOTD asks the LLM for the MOTD banner and initial prompt in one call.
 // The result is NOT added to conversation history.
 func (s *Session) fetchMOTD() string {
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	initMsg := "__SYSTEM_INIT__: Output the login MOTD and last-login banner for this system, then on the very last line show the initial shell prompt (format: user@hostname:~$ ). Raw text only."
@@ -104,7 +104,7 @@ func (s *Session) fetchMOTD() string {
 // streamResponse streams the LLM response line-by-line to the SSH session.
 // Lines are flushed as soon as they're complete — no character-drip effect.
 func (s *Session) streamResponse(sess ssh.Session, command string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	var full strings.Builder    // accumulates the full response for history

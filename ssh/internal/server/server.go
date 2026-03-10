@@ -72,7 +72,7 @@ func (s *Server) handlePassword(ctx ssh.Context, password string) bool {
 		Password:  password,
 	})
 
-	authCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	authCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	accepted := s.provider.ValidateAuth(authCtx, s.scenario.Content(), username, password)

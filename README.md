@@ -4,8 +4,6 @@ An LLM powered honeypot simulating virtually any system or platform, and designe
 
 ## How It Works
 
-## How It Works
-
 ```
 SCENARIO.md  ──▶  LLM (system prompt)
                        │
