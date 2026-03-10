@@ -89,6 +89,15 @@ func (s *Session) fetchMOTD() string {
 		output = fmt.Sprintf("%s@host:~$ ", s.username)
 	}
 	s.lastPrompt = extractPrompt(output)
+
+	// Ensure there is a blank line between the MOTD body and the prompt so
+	// the first typed command never appears joined to the last MOTD line.
+	lines := strings.Split(strings.TrimRight(output, "\r\n"), "\n")
+	if len(lines) >= 2 {
+		body := strings.Join(lines[:len(lines)-1], "\n")
+		prompt := strings.TrimRight(lines[len(lines)-1], "\r")
+		output = body + "\n\n" + prompt
+	}
 	return output
 }
 
@@ -100,6 +109,7 @@ func (s *Session) streamResponse(sess ssh.Session, command string) {
 
 	var full strings.Builder    // accumulates the full response for history
 	var lineBuf strings.Builder // buffers tokens until a complete line is ready
+	firstLine := true           // track first line to filter command echo
 
 	err := s.provider.ExecuteCommandStream(ctx, s.scenario, s.history, command, func(chunk string) {
 		full.WriteString(chunk)
@@ -112,11 +122,24 @@ func (s *Session) streamResponse(sess ssh.Session, command string) {
 			if idx < 0 {
 				break
 			}
-			// Normalise to \r\n for PTY clients.
-			line := strings.TrimRight(buf[:idx], "\r") + "\r\n"
-			_, _ = sess.Write([]byte(line))
+			raw := strings.TrimRight(buf[:idx], "\r")
 			lineBuf.Reset()
 			lineBuf.WriteString(buf[idx+1:])
+
+			// Skip markdown code fences (e.g. mistral wraps file output in ```).
+			if isCodeFence(raw) {
+				firstLine = false
+				continue
+			}
+			// Skip command echo on first line (e.g. mistral echoes "prompt$ command").
+			if firstLine {
+				firstLine = false
+				if isCommandEcho(raw, command) {
+					continue
+				}
+			}
+			// Normalise to \r\n for PTY clients.
+			_, _ = sess.Write([]byte(raw + "\r\n"))
 		}
 	})
 
@@ -214,6 +237,25 @@ func readLine(sess ssh.Session) (string, error) {
 			return string(line), io.EOF
 		}
 	}
+}
+
+// isCommandEcho returns true when a model echoes the command back as the first
+// output line (e.g. "admin@host:~$ ls" or just "$ ls" / "ls").
+func isCommandEcho(line, command string) bool {
+	cmd := strings.TrimSpace(command)
+	trimmed := strings.TrimSpace(line)
+	// Match "...$ command" patterns (prompt echo).
+	if idx := strings.LastIndex(trimmed, "$ "); idx >= 0 {
+		return strings.TrimSpace(trimmed[idx+2:]) == cmd
+	}
+	// Match bare command echo (line equals the command exactly).
+	return trimmed == cmd
+}
+
+// isCodeFence returns true for markdown code-fence lines (``` or ~~~).
+func isCodeFence(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
 }
 
 func isExit(line string) bool {
