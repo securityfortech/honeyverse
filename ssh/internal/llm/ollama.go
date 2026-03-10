@@ -145,7 +145,7 @@ func buildOllamaMessages(system string, history []Message, command string) []oll
 	messages := make([]ollamaMessage, 0, len(history)+2)
 	messages = append(messages, ollamaMessage{Role: "system", Content: system})
 	for _, h := range history {
-		messages = append(messages, ollamaMessage{Role: h.Role, Content: h.Content})
+		messages = append(messages, ollamaMessage(h))
 	}
 	messages = append(messages, ollamaMessage{Role: "user", Content: command})
 	return messages
