@@ -1,12 +1,6 @@
 # Honeyverse 🔐🍯🤖
 
-Honeyverse is a versatile AI-powered honeypot platform designed to simulate realistic digital environments and trap threat actors inside controlled deception scenarios. Instead of exposing real infrastructure, Honeyverse allows defenders to define custom attack scenarios while large language models dynamically generate a believable fake world around the attacker.
-
-The system can emulate virtually any service, protocol, or infrastructure — SSH servers, web applications, APIs, cloud environments, enterprise networks, IoT devices, and industrial systems. Every interaction inside the environment is generated in real time by LLMs, including command outputs, system responses, file systems, logs, configurations, and service behaviors, creating a dynamic simulation that evolves as the attacker explores it.
-
-From the attacker's perspective the environment appears authentic and interactive, while in reality they are operating inside a controlled simulation designed to observe behavior, capture techniques, gather high-value threat intelligence, and keep adversaries engaged in an infinite exploration loop without ever reaching real assets.
-
-Honeyverse transforms traditional honeypots into adaptive deception environments where every attacker interaction becomes an opportunity to study tactics, delay intrusion campaigns, and strengthen defensive intelligence.
+An LLM powered honeypot simulating virtually any system or platform, and designed to trap attackers inside realistic deception scenarios.
 
 ## How It Works
 
