@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -91,8 +90,4 @@ func buildAnthropicMessages(history []Message, command string) []anthropic.Messa
 	return messages
 }
 
-// Ensure AnthropicProvider satisfies Provider at compile time.
 var _ Provider = (*AnthropicProvider)(nil)
-
-// keep fmt imported
-var _ = fmt.Sprintf

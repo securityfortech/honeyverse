@@ -22,17 +22,17 @@ import (
 // Server wraps the gliderlabs SSH server with honeypot logic.
 type Server struct {
 	scenario *scenario.Scenario
-	llm     llm.Provider
+	provider llm.Provider
 	logger   *logger.Logger
 	ssh      *ssh.Server
 }
 
 // New builds a Server listening on the given port.
 // hostKeyPath is the file used to persist the RSA host key across restarts.
-func New(sc *scenario.Scenario, cl llm.Provider, lg *logger.Logger, port int, hostKeyPath string) (*Server, error) {
+func New(sc *scenario.Scenario, provider llm.Provider, lg *logger.Logger, port int, hostKeyPath string) (*Server, error) {
 	srv := &Server{
 		scenario: sc,
-		llm:      cl,
+		provider: provider,
 		logger:   lg,
 	}
 
@@ -45,10 +45,8 @@ func New(sc *scenario.Scenario, cl llm.Provider, lg *logger.Logger, port int, ho
 		Addr:            fmt.Sprintf(":%d", port),
 		Handler:         srv.handleSession,
 		PasswordHandler: srv.handlePassword,
-		// Reject public-key auth so we always capture a password attempt.
-		PublicKeyHandler: func(ctx ssh.Context, key ssh.PublicKey) bool {
-			return false
-		},
+		// Reject public-key auth to always capture a password attempt.
+		PublicKeyHandler: func(_ ssh.Context, _ ssh.PublicKey) bool { return false },
 	}
 	srv.ssh.AddHostKey(signer)
 
@@ -62,12 +60,12 @@ func (s *Server) ListenAndServe() error {
 
 // handlePassword is called for every authentication attempt.
 func (s *Server) handlePassword(ctx ssh.Context, password string) bool {
-	sessionID := sessionID()
+	sid := sessionID()
 	remoteIP := logger.RemoteIP(ctx.RemoteAddr())
 	username := ctx.User()
 
 	s.logger.Log(logger.Event{
-		SessionID: sessionID,
+		SessionID: sid,
 		Type:      logger.EventAuthAttempt,
 		RemoteIP:  remoteIP,
 		Username:  username,
@@ -77,28 +75,26 @@ func (s *Server) handlePassword(ctx ssh.Context, password string) bool {
 	authCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	accepted := s.llm.ValidateAuth(authCtx, s.scenario.Content(), username, password)
+	accepted := s.provider.ValidateAuth(authCtx, s.scenario.Content(), username, password)
+
+	eventType := logger.EventAuthReject
+	if accepted {
+		eventType = logger.EventAuthAccept
+		ctx.SetValue("session_id", sid)
+	}
+
+	s.logger.Log(logger.Event{
+		SessionID: sid,
+		Type:      eventType,
+		RemoteIP:  remoteIP,
+		Username:  username,
+		Password:  password,
+	})
 
 	if accepted {
-		s.logger.Log(logger.Event{
-			SessionID: sessionID,
-			Type:      logger.EventAuthAccept,
-			RemoteIP:  remoteIP,
-			Username:  username,
-			Password:  password,
-		})
-		// Store session ID in context so handleSession can reuse it.
-		ctx.SetValue("session_id", sessionID)
-		log.Printf("[%s] AUTH ACCEPTED  user=%q pass=%q ip=%s", sessionID, username, password, remoteIP)
+		log.Printf("[%s] AUTH ACCEPTED  user=%q pass=%q ip=%s", sid, username, password, remoteIP)
 	} else {
-		s.logger.Log(logger.Event{
-			SessionID: sessionID,
-			Type:      logger.EventAuthReject,
-			RemoteIP:  remoteIP,
-			Username:  username,
-			Password:  password,
-		})
-		log.Printf("[%s] AUTH REJECTED  user=%q pass=%q ip=%s", sessionID, username, password, remoteIP)
+		log.Printf("[%s] AUTH REJECTED  user=%q pass=%q ip=%s", sid, username, password, remoteIP)
 	}
 
 	return accepted
@@ -122,8 +118,7 @@ func (s *Server) handleSession(sess ssh.Session) {
 	})
 	log.Printf("[%s] SESSION START  user=%q ip=%s", id, username, remoteIP)
 
-	sh := shell.New(id, username, s.scenario.Content(), s.llm, s.logger)
-	sh.Run(sess)
+	shell.New(id, username, s.scenario.Content(), s.provider, s.logger).Run(sess)
 
 	s.logger.Log(logger.Event{
 		SessionID: id,
@@ -137,11 +132,11 @@ func (s *Server) handleSession(sess ssh.Session) {
 // loadOrGenerateHostKey loads an existing RSA key from disk or creates one.
 func loadOrGenerateHostKey(path string) (gossh.Signer, error) {
 	if data, err := os.ReadFile(path); err == nil {
-		signer, err := gossh.ParsePrivateKey(data)
-		if err == nil {
+		if signer, err := gossh.ParsePrivateKey(data); err == nil {
 			return signer, nil
+		} else {
+			log.Printf("warn: could not parse host key, regenerating: %v", err)
 		}
-		log.Printf("warn: could not parse existing host key, regenerating: %v", err)
 	}
 
 	key, err := rsa.GenerateKey(rand.Reader, 3072)
@@ -154,16 +149,15 @@ func loadOrGenerateHostKey(path string) (gossh.Signer, error) {
 		return nil, fmt.Errorf("create signer: %w", err)
 	}
 
-	// Persist the key so clients don't see "host key changed" on reconnect.
-	pemBytes := encodeRSAKey(key)
-	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
-		log.Printf("warn: could not persist host key to %s: %v", path, err)
+	if pemBytes := encodeRSAKey(key); pemBytes != nil {
+		if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+			log.Printf("warn: could not persist host key to %s: %v", path, err)
+		}
 	}
 
 	return signer, nil
 }
 
-// encodeRSAKey encodes an RSA private key to OpenSSH PEM format.
 func encodeRSAKey(key *rsa.PrivateKey) []byte {
 	block, err := gossh.MarshalPrivateKey(key, "")
 	if err != nil {
@@ -172,7 +166,6 @@ func encodeRSAKey(key *rsa.PrivateKey) []byte {
 	return pem.EncodeToMemory(block)
 }
 
-// sessionID generates a unique session identifier.
 func sessionID() string {
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)

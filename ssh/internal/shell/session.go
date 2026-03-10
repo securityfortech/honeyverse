@@ -21,33 +21,31 @@ type Session struct {
 	scenario   string
 	history    []llm.Message
 	lastPrompt string // last shell prompt line emitted by the LLM
-	llm        llm.Provider
+	provider   llm.Provider
 	logger     *logger.Logger
 }
 
 // New creates a Session.
-func New(id, username, scenarioContent string, cl llm.Provider, lg *logger.Logger) *Session {
+func New(id, username, scenarioContent string, provider llm.Provider, lg *logger.Logger) *Session {
 	return &Session{
 		id:       id,
 		username: username,
 		scenario: scenarioContent,
-		llm:    cl,
+		provider: provider,
 		logger:   lg,
 	}
 }
 
 // Run drives the interactive shell loop for the given SSH session.
 func (s *Session) Run(sess ssh.Session) {
-	// Ask Claude for the MOTD + initial shell prompt in one call.
-	// This result is intentionally NOT added to conversation history so it
-	// doesn't pollute subsequent command context.
+	// Fetch MOTD + initial prompt. Not added to history to keep command
+	// context clean.
 	motd := s.fetchMOTD()
 	writeOutput(sess, motd)
 
 	for {
 		line, err := readLine(sess)
 		if err != nil {
-			// EOF or Ctrl+D — client disconnected.
 			return
 		}
 
@@ -68,7 +66,7 @@ func (s *Session) Run(sess ssh.Session) {
 			return
 		}
 
-		s.streamClaude(sess, line)
+		s.streamResponse(sess, line)
 
 		s.logger.Log(logger.Event{
 			SessionID: s.id,
@@ -79,105 +77,88 @@ func (s *Session) Run(sess ssh.Session) {
 	}
 }
 
-// fetchMOTD calls Claude for the initial MOTD + first shell prompt.
+// fetchMOTD asks the LLM for the MOTD banner and initial prompt in one call.
 // The result is NOT added to conversation history.
 func (s *Session) fetchMOTD() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	initMsg := "__SYSTEM_INIT__: Output the login MOTD and last-login banner for this system, then on the very last line show the initial shell prompt (format: user@hostname:~$). Raw text only."
-	output, err := s.llm.ExecuteCommand(ctx, s.scenario, nil, initMsg)
+	initMsg := "__SYSTEM_INIT__: Output the login MOTD and last-login banner for this system, then on the very last line show the initial shell prompt (format: user@hostname:~$ ). Raw text only."
+	output, err := s.provider.ExecuteCommand(ctx, s.scenario, nil, initMsg)
 	if err != nil || output == "" {
-		// Fallback: static prompt so the attacker sees something.
 		output = fmt.Sprintf("%s@host:~$ ", s.username)
 	}
 	s.lastPrompt = extractPrompt(output)
 	return output
 }
 
-// streamClaude streams the response line-by-line to the SSH session.
-// Each complete line is written as soon as Claude generates it — no chatbot
-// character-drip effect, just realistic line-at-a-time output.
-func (s *Session) streamClaude(sess ssh.Session, command string) {
+// streamResponse streams the LLM response line-by-line to the SSH session.
+// Lines are flushed as soon as they're complete — no character-drip effect.
+func (s *Session) streamResponse(sess ssh.Session, command string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	var full strings.Builder   // accumulates the complete response for history
-	var lineBuf strings.Builder // buffers until we have a full line to flush
+	var full strings.Builder    // accumulates the full response for history
+	var lineBuf strings.Builder // buffers tokens until a complete line is ready
 
-	flushLine := func(line string) {
-		// Convert \n → \r\n and write immediately.
-		_, _ = sess.Write([]byte(line))
-	}
-
-	err := s.llm.ExecuteCommandStream(ctx, s.scenario, s.history, command, func(chunk string) {
+	err := s.provider.ExecuteCommandStream(ctx, s.scenario, s.history, command, func(chunk string) {
 		full.WriteString(chunk)
 		lineBuf.WriteString(chunk)
 
-		// Flush every complete line we've accumulated.
+		// Flush every complete line as soon as it arrives.
 		for {
 			buf := lineBuf.String()
 			idx := strings.Index(buf, "\n")
 			if idx < 0 {
 				break
 			}
-			line := buf[:idx+1] // includes the \n
-			// Replace \n with \r\n for PTY.
-			line = strings.ReplaceAll(line, "\r\n", "\n")
-			line = strings.ReplaceAll(line, "\n", "\r\n")
-			flushLine(line)
+			// Normalise to \r\n for PTY clients.
+			line := strings.TrimRight(buf[:idx], "\r") + "\r\n"
+			_, _ = sess.Write([]byte(line))
 			lineBuf.Reset()
 			lineBuf.WriteString(buf[idx+1:])
 		}
 	})
 
-	// Flush any remaining content (the prompt — no trailing \n).
+	// Flush the trailing prompt (no \n after it — cursor stays on prompt line).
 	if remainder := lineBuf.String(); remainder != "" {
 		_, _ = sess.Write([]byte(remainder))
 	}
 
-	output := full.String()
-
 	if err != nil {
-		cmd := firstWord(command)
-		fallback := fmt.Sprintf("bash: %s: command not found\r\n%s", cmd, s.lastPrompt)
+		fallback := fmt.Sprintf("bash: %s: command not found\r\n%s", firstWord(command), s.lastPrompt)
 		_, _ = sess.Write([]byte(fallback))
 		return
 	}
 
+	output := full.String()
 	if p := extractPrompt(output); p != "" {
 		s.lastPrompt = p
 	}
-
 	s.history = append(s.history,
 		llm.Message{Role: "user", Content: command},
 		llm.Message{Role: "assistant", Content: output},
 	)
 }
 
-// extractPrompt returns the last non-empty line of output, which Claude
-// is instructed to make the shell prompt.
+// extractPrompt returns the last non-empty line of output.
 func extractPrompt(output string) string {
 	lines := strings.Split(strings.TrimRight(output, "\r\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimRight(lines[i], "\r")
-		if line != "" {
+		if line := strings.TrimRight(lines[i], "\r"); line != "" {
 			return line
 		}
 	}
 	return ""
 }
 
-// writeOutput writes terminal output to the SSH session with \r\n line endings.
-// The last line (the shell prompt) is written WITHOUT a trailing newline so the
-// cursor stays on the prompt line, ready for input.
+// writeOutput writes output to the SSH session with correct \r\n endings.
+// The last line has no trailing newline so the cursor stays on the prompt.
 func writeOutput(w io.Writer, output string) {
 	if output == "" {
 		return
 	}
-	// Normalise to \n-only, then split.
-	normalised := strings.ReplaceAll(output, "\r\n", "\n")
-	normalised = strings.ReplaceAll(normalised, "\r", "\n")
+	normalised := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(output)
 	lines := strings.Split(normalised, "\n")
 
 	var buf bytes.Buffer
@@ -190,9 +171,8 @@ func writeOutput(w io.Writer, output string) {
 	_, _ = w.Write(buf.Bytes())
 }
 
-// readLine reads one line from the SSH session character by character,
-// echoing printable characters, handling backspace, and detecting control codes.
-// Returns io.EOF when the client disconnects or sends Ctrl+D on an empty line.
+// readLine reads one line character-by-character with local echo, backspace
+// support, and control-code handling.
 func readLine(sess ssh.Session) (string, error) {
 	var line []byte
 	buf := make([]byte, 1)
@@ -203,15 +183,14 @@ func readLine(sess ssh.Session) (string, error) {
 			c := buf[0]
 			switch {
 			case c == '\r' || c == '\n':
-				// Enter — echo newline and return the accumulated line.
 				_, _ = sess.Write([]byte("\r\n"))
 				return string(line), nil
 
-			case c == 0x03: // Ctrl+C — interrupt, return empty with a visual cue.
+			case c == 0x03: // Ctrl+C
 				_, _ = sess.Write([]byte("^C\r\n"))
 				return "", nil
 
-			case c == 0x04: // Ctrl+D — EOF if line is empty, otherwise ignore.
+			case c == 0x04: // Ctrl+D — EOF on empty line
 				if len(line) == 0 {
 					return "", io.EOF
 				}
@@ -219,17 +198,16 @@ func readLine(sess ssh.Session) (string, error) {
 			case c == 0x7f || c == 0x08: // Backspace / DEL
 				if len(line) > 0 {
 					line = line[:len(line)-1]
-					_, _ = sess.Write([]byte("\b \b")) // erase character on screen
+					_, _ = sess.Write([]byte("\b \b"))
 				}
 
-			case c == 0x1b: // ESC — start of an escape sequence (arrow keys etc.)
-				// Read and discard the rest of the sequence (typically 2 more bytes).
+			case c == 0x1b: // ESC sequence (arrow keys etc.) — discard
 				discard := make([]byte, 2)
 				_, _ = sess.Read(discard)
 
-			case c >= 0x20: // Printable ASCII
+			case c >= 0x20: // Printable character
 				line = append(line, c)
-				_, _ = sess.Write([]byte{c}) // echo back
+				_, _ = sess.Write([]byte{c})
 			}
 		}
 		if err != nil {
@@ -247,9 +225,8 @@ func isExit(line string) bool {
 }
 
 func firstWord(s string) string {
-	parts := strings.Fields(s)
-	if len(parts) == 0 {
-		return ""
+	if parts := strings.Fields(s); len(parts) > 0 {
+		return parts[0]
 	}
-	return parts[0]
+	return s
 }

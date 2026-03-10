@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // OllamaProvider implements Provider using a local Ollama instance.
@@ -28,7 +27,7 @@ func NewOllama(baseURL, model string) *OllamaProvider {
 	return &OllamaProvider{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		model:   model,
-		client:  &http.Client{Timeout: 0}, // no global timeout; rely on ctx
+		client:  &http.Client{}, // timeout handled by the context passed to each call
 	}
 }
 
@@ -43,7 +42,7 @@ type ollamaRequest struct {
 	Model    string          `json:"model"`
 	Messages []ollamaMessage `json:"messages"`
 	Stream   bool            `json:"stream"`
-	Think    bool            `json:"think"` // disable thinking mode (qwen3 etc.)
+	Think    bool            `json:"think"` // disable thinking tokens (qwen3 etc.)
 }
 
 type ollamaChunk struct {
@@ -58,17 +57,14 @@ func (p *OllamaProvider) ValidateAuth(ctx context.Context, scenario, username, p
 	prompt := AuthPrompt(scenario, username, password)
 
 	var result strings.Builder
-	err := p.stream(ctx, []ollamaMessage{
-		{Role: "user", Content: prompt},
-	}, func(chunk string) {
+	err := p.stream(ctx, []ollamaMessage{{Role: "user", Content: prompt}}, func(chunk string) {
 		result.WriteString(chunk)
 	})
 	if err != nil {
 		return false
 	}
-	answer := strings.TrimSpace(strings.ToUpper(result.String()))
-	// Be flexible: accept if response contains ACCEPT anywhere.
-	return strings.Contains(answer, "ACCEPT")
+	// Be flexible: small models may not output just one word.
+	return strings.Contains(strings.ToUpper(result.String()), "ACCEPT")
 }
 
 func (p *OllamaProvider) ExecuteCommand(ctx context.Context, scenario string, history []Message, command string) (string, error) {
@@ -80,16 +76,14 @@ func (p *OllamaProvider) ExecuteCommand(ctx context.Context, scenario string, hi
 }
 
 func (p *OllamaProvider) ExecuteCommandStream(ctx context.Context, scenario string, history []Message, command string, onChunk func(string)) error {
-	sys := SystemPrompt(scenario)
-	messages := buildOllamaMessages(sys, history, command)
+	messages := buildOllamaMessages(SystemPrompt(scenario), history, command)
 
-	// Strip <think>...</think> blocks that reasoning models emit.
+	// Strip <think>...</think> blocks emitted by reasoning models.
 	inThink := false
 	var thinkBuf strings.Builder
 
 	return p.stream(ctx, messages, func(chunk string) {
-		filtered := filterThinking(chunk, &inThink, &thinkBuf)
-		if filtered != "" {
+		if filtered := filterThinking(chunk, &inThink, &thinkBuf); filtered != "" {
 			onChunk(filtered)
 		}
 	})
@@ -158,7 +152,7 @@ func buildOllamaMessages(system string, history []Message, command string) []oll
 }
 
 // filterThinking strips <think>...</think> blocks emitted by reasoning models.
-// It is stateful: inThink and buf persist across chunks.
+// inThink and buf are stateful and must persist across chunks.
 func filterThinking(chunk string, inThink *bool, buf *strings.Builder) string {
 	var out strings.Builder
 	for _, ch := range chunk {
@@ -173,17 +167,14 @@ func filterThinking(chunk string, inThink *bool, buf *strings.Builder) string {
 		} else {
 			if strings.HasSuffix(s, "<think>") {
 				*inThink = true
-				// Flush whatever came before <think>.
-				before := strings.TrimSuffix(s, "<think>")
-				out.WriteString(before)
+				out.WriteString(strings.TrimSuffix(s, "<think>"))
 				buf.Reset()
 			}
 		}
 	}
+	// Flush buffered content only if it can't still be a partial <think> tag.
 	if !*inThink {
-		remaining := buf.String()
-		// Only flush if we're sure we're not at the start of a tag.
-		if !strings.HasPrefix("<think>", remaining) {
+		if remaining := buf.String(); !strings.HasPrefix("<think>", remaining) {
 			out.WriteString(remaining)
 			buf.Reset()
 		}
@@ -191,8 +182,4 @@ func filterThinking(chunk string, inThink *bool, buf *strings.Builder) string {
 	return out.String()
 }
 
-// Ensure OllamaProvider satisfies Provider at compile time.
 var _ Provider = (*OllamaProvider)(nil)
-
-// keep time imported for potential future use
-var _ = time.Second

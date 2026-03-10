@@ -3,6 +3,7 @@ package logger
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -51,6 +52,7 @@ func (l *Logger) Log(e Event) {
 
 	data, err := json.Marshal(e)
 	if err != nil {
+		log.Printf("warn: logger marshal error (session %s): %v", e.SessionID, err)
 		return
 	}
 	data = append(data, '\n')
@@ -62,10 +64,14 @@ func (l *Logger) Log(e Event) {
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
 	if err != nil {
+		log.Printf("warn: logger open error (session %s): %v", e.SessionID, err)
 		return
 	}
 	defer f.Close()
-	_, _ = f.Write(data)
+
+	if _, err := f.Write(data); err != nil {
+		log.Printf("warn: logger write error (session %s): %v", e.SessionID, err)
+	}
 }
 
 // RemoteIP extracts the host from a net.Addr, stripping the port.
